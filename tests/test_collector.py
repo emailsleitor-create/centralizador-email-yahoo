@@ -5,7 +5,14 @@ from email.parser import BytesParser
 
 os.environ.setdefault("STATE_PATH", "/tmp/coletor-yahoo-test-state.json")
 
-from collector import YahooAccount, build_forward, extract_body, safe_filename
+from collector import (
+    MessageUnavailableError,
+    YahooAccount,
+    build_forward,
+    extract_body,
+    fetch_message,
+    safe_filename,
+)
 
 
 class CollectorTests(unittest.TestCase):
@@ -75,6 +82,14 @@ class CollectorTests(unittest.TestCase):
 
     def test_safe_filename_removes_path_characters(self):
         self.assertEqual(safe_filename("../../arquivo.pdf", 1), ".._.._arquivo.pdf")
+
+    def test_missing_yahoo_message_has_specific_error(self):
+        class EmptyImap:
+            def uid(self, *args):
+                return "OK", [b"67 (FLAGS (\\Seen))", b")"]
+
+        with self.assertRaises(MessageUnavailableError):
+            fetch_message(EmptyImap(), 67)
 
 
 if __name__ == "__main__":
