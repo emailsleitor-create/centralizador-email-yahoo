@@ -15,8 +15,8 @@ Fortaleza e mantém um controle de UID para evitar mensagens duplicadas.
 ## Segurança
 
 Não coloque senhas em arquivos do repositório. Use somente senhas de aplicativo
-do Yahoo, cadastradas nos segredos do GitHub. Uma senha de aplicativo pode ser
-revogada sem alterar a senha principal da conta.
+do Yahoo e do Gmail, cadastradas nos segredos do GitHub. Uma senha de aplicativo
+pode ser revogada sem alterar a senha principal da conta.
 
 ## Segredos necessários
 
@@ -28,6 +28,15 @@ O endereço que receberá todas as mensagens:
 
 ```text
 emailcentral@gmail.com
+```
+
+### `GMAIL_APP_PASSWORD`
+
+A senha de aplicativo gerada na mesma conta do Gmail central. O coletor usa o
+Gmail apenas para enviar cada cópia para ele próprio:
+
+```text
+senha-de-aplicativo-do-gmail
 ```
 
 ### `YAHOO_ACCOUNTS_JSON`
@@ -60,5 +69,5 @@ dos últimos dois dias. Nas próximas execuções, busca apenas UIDs posteriores
 
 ## Observação
 
-O serviço usa os servidores oficiais IMAP e SMTP do Yahoo. O GitHub não recebe a
-senha principal das contas.
+O serviço lê as mensagens pelo servidor IMAP oficial do Yahoo e envia as cópias
+pelo SMTP oficial do Gmail. O GitHub não recebe as senhas principais das contas.
