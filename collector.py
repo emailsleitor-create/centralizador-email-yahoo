@@ -33,6 +33,10 @@ MAX_MESSAGES_PER_ACCOUNT = int(os.getenv("MAX_MESSAGES_PER_ACCOUNT", "100"))
 LOG = logging.getLogger("coletor")
 
 
+class MessageUnavailableError(RuntimeError):
+    """Mensagem listada pelo Yahoo, mas sem conteúdo disponível para download."""
+
+
 @dataclass(frozen=True)
 class YahooAccount:
     email: str
@@ -230,7 +234,7 @@ def fetch_message(imap: imaplib.IMAP4_SSL, uid: int) -> bytes:
     for item in result:
         if isinstance(item, tuple) and isinstance(item[1], bytes):
             return item[1]
-    raise RuntimeError(f"Conteúdo ausente na mensagem UID {uid}.")
+    raise MessageUnavailableError(f"Conteúdo ausente na mensagem UID {uid}.")
 
 
 def process_account(
@@ -267,6 +271,15 @@ def process_account(
                     from_addr=central_gmail,
                     to_addrs=[central_gmail],
                 )
+            except MessageUnavailableError:
+                LOG.warning(
+                    "%s: mensagem UID %d indisponível no Yahoo; seguindo adiante.",
+                    account.state_key,
+                    uid,
+                )
+                account_state["last_uid"] = uid
+                account_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+                continue
             except Exception:
                 errors += 1
                 LOG.exception(
