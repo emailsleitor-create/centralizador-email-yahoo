@@ -1,1 +1,1 @@
-Contagem de mensagens não lidas do histórico iniciada em 23/07/2026.
+Primeiro lote histórico de não lidos iniciado em 23/07/2026.
