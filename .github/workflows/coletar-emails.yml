@@ -35,6 +35,7 @@ jobs:
       - name: Buscar e encaminhar mensagens
         env:
           CENTRAL_GMAIL: ${{ secrets.CENTRAL_GMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           YAHOO_ACCOUNTS_JSON: ${{ secrets.YAHOO_ACCOUNTS_JSON }}
           INITIAL_LOOKBACK_DAYS: "2"
           MAX_MESSAGES_PER_ACCOUNT: "100"
