@@ -17,8 +17,8 @@
       "updated_at": "2026-07-23T15:13:07.377655+00:00"
     },
     "account_005": {
-      "last_uid": 169,
-      "updated_at": "2026-07-23T15:13:21.318842+00:00"
+      "last_uid": 170,
+      "updated_at": "2026-07-23T15:25:42.098770+00:00"
     },
     "account_006": {
       "last_uid": 30284,
@@ -39,6 +39,43 @@
     "account_010": {
       "last_uid": 30078,
       "updated_at": "2026-07-23T15:13:36.589945+00:00"
+    }
+  },
+  "backfills": {
+    "2026-06-23_2026-07-21": {
+      "accounts": {
+        "account_001": {
+          "processed_uids": []
+        },
+        "account_002": {
+          "processed_uids": []
+        },
+        "account_003": {
+          "processed_uids": []
+        },
+        "account_004": {
+          "processed_uids": []
+        },
+        "account_005": {
+          "processed_uids": []
+        },
+        "account_006": {
+          "processed_uids": []
+        },
+        "account_007": {
+          "processed_uids": []
+        },
+        "account_008": {
+          "processed_uids": []
+        },
+        "account_009": {
+          "processed_uids": []
+        },
+        "account_010": {
+          "processed_uids": []
+        }
+      },
+      "completed": false
     }
   },
   "version": 1
