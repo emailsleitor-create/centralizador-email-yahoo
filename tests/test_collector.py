@@ -36,6 +36,7 @@ class CollectorTests(unittest.TestCase):
             "central@gmail.com",
         )
         self.assertEqual(forwarded["To"], "central@gmail.com")
+        self.assertEqual(forwarded["From"], "central@gmail.com")
         self.assertEqual(forwarded["Reply-To"], "Pessoa <pessoa@example.com>")
         self.assertIn("[Yahoo: Projetos]", forwarded["Subject"])
         self.assertIn("Providenciar documentos", forwarded.get_content())
