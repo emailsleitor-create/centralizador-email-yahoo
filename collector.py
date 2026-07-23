@@ -38,6 +38,18 @@ class MessageUnavailableError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class BackfillConfig:
+    since: datetime
+    before: datetime
+    max_per_run: int
+    dry_run: bool
+
+    @property
+    def state_key(self) -> str:
+        return f"{self.since:%Y-%m-%d}_{self.before:%Y-%m-%d}"
+
+
+@dataclass(frozen=True)
 class YahooAccount:
     email: str
     app_password: str
@@ -227,6 +239,54 @@ def search_uids(imap: imaplib.IMAP4_SSL, last_uid: int | None) -> list[int]:
     return uids[:MAX_MESSAGES_PER_ACCOUNT]
 
 
+def load_backfill_config() -> BackfillConfig | None:
+    since_raw = os.getenv("BACKFILL_SINCE", "").strip()
+    before_raw = os.getenv("BACKFILL_BEFORE", "").strip()
+    if not since_raw and not before_raw:
+        return None
+    if not since_raw or not before_raw:
+        raise ValueError("BACKFILL_SINCE e BACKFILL_BEFORE devem ser informados juntos.")
+    try:
+        since = datetime.strptime(since_raw, "%Y-%m-%d").replace(
+            tzinfo=timezone.utc
+        )
+        before = datetime.strptime(before_raw, "%Y-%m-%d").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError as exc:
+        raise ValueError("As datas do histórico devem usar o formato AAAA-MM-DD.") from exc
+    if before <= since:
+        raise ValueError("BACKFILL_BEFORE deve ser posterior a BACKFILL_SINCE.")
+    max_per_run = int(os.getenv("BACKFILL_MAX_PER_RUN", "25"))
+    if max_per_run < 1:
+        raise ValueError("BACKFILL_MAX_PER_RUN deve ser maior que zero.")
+    dry_run = os.getenv("BACKFILL_DRY_RUN", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    return BackfillConfig(since, before, max_per_run, dry_run)
+
+
+def search_unread_history(
+    imap: imaplib.IMAP4_SSL,
+    config: BackfillConfig,
+) -> list[int]:
+    status, result = imap.uid(
+        "search",
+        None,
+        "UNSEEN",
+        "SINCE",
+        config.since.strftime("%d-%b-%Y"),
+        "BEFORE",
+        config.before.strftime("%d-%b-%Y"),
+    )
+    if status != "OK":
+        raise RuntimeError("O Yahoo não conseguiu pesquisar o histórico.")
+    raw_uids = result[0].split() if result and result[0] else []
+    return [int(value) for value in raw_uids]
+
+
 def fetch_message(imap: imaplib.IMAP4_SSL, uid: int) -> bytes:
     status, result = imap.uid("fetch", str(uid), "(BODY.PEEK[])")
     if status != "OK" or not result:
@@ -295,6 +355,83 @@ def process_account(
     return copied, errors
 
 
+def process_backfill_account(
+    account: YahooAccount,
+    central_gmail: str,
+    state: dict[str, Any],
+    smtp: smtplib.SMTP_SSL,
+    config: BackfillConfig,
+    budget: int,
+) -> tuple[int, int, int, int]:
+    backfills = state.setdefault("backfills", {})
+    backfill_state = backfills.setdefault(
+        config.state_key,
+        {"accounts": {}, "completed": False},
+    )
+    account_state = backfill_state["accounts"].setdefault(
+        account.state_key,
+        {"processed_uids": []},
+    )
+    processed = {int(uid) for uid in account_state.get("processed_uids", [])}
+    copied = 0
+    errors = 0
+    handled = 0
+
+    context = ssl.create_default_context()
+    with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=context) as imap:
+        imap.login(account.email, account.app_password)
+        status, _ = imap.select("INBOX", readonly=True)
+        if status != "OK":
+            raise RuntimeError("Não foi possível abrir a caixa de entrada.")
+        candidates = [
+            uid for uid in search_unread_history(imap, config) if uid not in processed
+        ]
+        LOG.info(
+            "%s: %d mensagem(ns) histórica(s) não lida(s) pendente(s).",
+            account.state_key,
+            len(candidates),
+        )
+
+        if config.dry_run or budget <= 0:
+            return copied, errors, handled, len(candidates)
+
+        for uid in candidates[:budget]:
+            try:
+                raw_message = fetch_message(imap, uid)
+                original = BytesParser(policy=policy.default).parsebytes(raw_message)
+                forwarded = build_forward(original, account, central_gmail)
+                smtp.send_message(
+                    forwarded,
+                    from_addr=central_gmail,
+                    to_addrs=[central_gmail],
+                )
+            except MessageUnavailableError:
+                LOG.warning(
+                    "%s: histórico UID %d indisponível; seguindo adiante.",
+                    account.state_key,
+                    uid,
+                )
+                processed.add(uid)
+                handled += 1
+                continue
+            except Exception:
+                errors += 1
+                LOG.exception(
+                    "%s: falha ao copiar o histórico UID %d.",
+                    account.state_key,
+                    uid,
+                )
+                break
+            else:
+                processed.add(uid)
+                copied += 1
+                handled += 1
+
+    account_state["processed_uids"] = sorted(processed)
+    account_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return copied, errors, handled, len(candidates)
+
+
 def main() -> int:
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -314,6 +451,7 @@ def main() -> int:
     try:
         accounts = load_accounts()
         state = load_state()
+        backfill_config = load_backfill_config()
     except (ValueError, OSError, json.JSONDecodeError) as exc:
         LOG.error("%s", exc)
         return 2
@@ -350,6 +488,77 @@ def main() -> int:
                     total_errors += errors
                 finally:
                     save_state(state)
+
+            if backfill_config is not None:
+                backfill_state = state.setdefault("backfills", {}).setdefault(
+                    backfill_config.state_key,
+                    {"accounts": {}, "completed": False},
+                )
+                if backfill_state.get("completed") and not backfill_config.dry_run:
+                    LOG.info("Importação histórica já concluída.")
+                else:
+                    remaining_budget = backfill_config.max_per_run
+                    history_copied = 0
+                    history_errors = 0
+                    history_handled = 0
+                    history_eligible = 0
+                    for account in accounts:
+                        try:
+                            copied, errors, handled, eligible = (
+                                process_backfill_account(
+                                    account,
+                                    central_gmail,
+                                    state,
+                                    smtp,
+                                    backfill_config,
+                                    remaining_budget,
+                                )
+                            )
+                        except (
+                            imaplib.IMAP4.error,
+                            smtplib.SMTPException,
+                            OSError,
+                            RuntimeError,
+                        ):
+                            history_errors += 1
+                            LOG.exception(
+                                "Falha no histórico de %s.",
+                                account.state_key,
+                            )
+                        else:
+                            history_copied += copied
+                            history_errors += errors
+                            history_handled += handled
+                            history_eligible += eligible
+                            remaining_budget = max(0, remaining_budget - handled)
+                        finally:
+                            save_state(state)
+
+                    if backfill_config.dry_run:
+                        LOG.info(
+                            "Contagem histórica: %d mensagem(ns) não lida(s).",
+                            history_eligible,
+                        )
+                    else:
+                        total_copied += history_copied
+                        total_errors += history_errors
+                        if (
+                            history_errors == 0
+                            and history_eligible <= history_handled
+                        ):
+                            backfill_state["completed"] = True
+                            backfill_state["completed_at"] = datetime.now(
+                                timezone.utc
+                            ).isoformat()
+                        LOG.info(
+                            "Histórico: %d copiada(s), %d tratada(s), "
+                            "%d pendente(s) antes do lote e %d erro(s).",
+                            history_copied,
+                            history_handled,
+                            history_eligible,
+                            history_errors,
+                        )
+                        save_state(state)
     except (smtplib.SMTPException, OSError):
         LOG.exception("Falha ao conectar ao Gmail para enviar as mensagens.")
         return 1
