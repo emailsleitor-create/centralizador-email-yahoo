@@ -41,7 +41,7 @@ jobs:
           MAX_MESSAGES_PER_ACCOUNT: "100"
           BACKFILL_SINCE: "2026-06-23"
           BACKFILL_BEFORE: "2026-07-21"
-          BACKFILL_MAX_PER_RUN: "25"
+          BACKFILL_MAX_PER_RUN: "15"
           BACKFILL_DRY_RUN: "false"
         run: python collector.py
 
