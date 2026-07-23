@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
 
@@ -7,11 +8,13 @@ os.environ.setdefault("STATE_PATH", "/tmp/coletor-yahoo-test-state.json")
 
 from collector import (
     MessageUnavailableError,
+    BackfillConfig,
     YahooAccount,
     build_forward,
     extract_body,
     fetch_message,
     safe_filename,
+    search_unread_history,
 )
 
 
@@ -90,6 +93,35 @@ class CollectorTests(unittest.TestCase):
 
         with self.assertRaises(MessageUnavailableError):
             fetch_message(EmptyImap(), 67)
+
+    def test_history_search_only_requests_unread_in_fixed_period(self):
+        class SearchImap:
+            arguments = None
+
+            def uid(self, *args):
+                self.arguments = args
+                return "OK", [b"10 20 30"]
+
+        imap = SearchImap()
+        config = BackfillConfig(
+            since=datetime(2026, 6, 23, tzinfo=timezone.utc),
+            before=datetime(2026, 7, 21, tzinfo=timezone.utc),
+            max_per_run=25,
+            dry_run=True,
+        )
+        self.assertEqual(search_unread_history(imap, config), [10, 20, 30])
+        self.assertEqual(
+            imap.arguments,
+            (
+                "search",
+                None,
+                "UNSEEN",
+                "SINCE",
+                "23-Jun-2026",
+                "BEFORE",
+                "21-Jul-2026",
+            ),
+        )
 
 
 if __name__ == "__main__":
