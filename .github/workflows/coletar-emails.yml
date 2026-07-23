@@ -1,0 +1,58 @@
+name: Coletar emails Yahoo
+
+on:
+  schedule:
+    - cron: "0 8,18 * * *"
+      timezone: "America/Fortaleza"
+  workflow_dispatch:
+  push:
+    paths:
+      - "trigger.txt"
+
+concurrency:
+  group: coletor-email-yahoo
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Baixar projeto
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Buscar e encaminhar mensagens
+        env:
+          CENTRAL_GMAIL: ${{ secrets.CENTRAL_GMAIL }}
+          YAHOO_ACCOUNTS_JSON: ${{ secrets.YAHOO_ACCOUNTS_JSON }}
+          INITIAL_LOOKBACK_DAYS: "2"
+          MAX_MESSAGES_PER_ACCOUNT: "100"
+        run: python collector.py
+
+      - name: Manter rotina pública ativa
+        if: always()
+        run: date -u +%Y-%m > heartbeat.txt
+
+      - name: Salvar controle contra duplicidade
+        if: always()
+        run: |
+          if git diff --quiet -- state/state.json heartbeat.txt; then
+            echo "Nenhuma alteração no controle."
+            exit 0
+          fi
+          git config user.name "coletor-email-yahoo[bot]"
+          git config user.email "coletor-email-yahoo@users.noreply.github.com"
+          git add state/state.json heartbeat.txt
+          git commit -m "Atualiza controle de mensagens processadas"
+          git push
