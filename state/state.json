@@ -1,6 +1,9 @@
 {
   "accounts": {
-    "account_001": {}
+    "account_001": {
+      "last_uid": 69,
+      "updated_at": "2026-07-23T14:11:21.896715+00:00"
+    }
   },
   "version": 1
 }
