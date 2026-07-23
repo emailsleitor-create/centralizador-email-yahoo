@@ -39,6 +39,10 @@ jobs:
           YAHOO_ACCOUNTS_JSON: ${{ secrets.YAHOO_ACCOUNTS_JSON }}
           INITIAL_LOOKBACK_DAYS: "2"
           MAX_MESSAGES_PER_ACCOUNT: "100"
+          BACKFILL_SINCE: "2026-06-23"
+          BACKFILL_BEFORE: "2026-07-21"
+          BACKFILL_MAX_PER_RUN: "25"
+          BACKFILL_DRY_RUN: "true"
         run: python collector.py
 
       - name: Manter rotina pública ativa
