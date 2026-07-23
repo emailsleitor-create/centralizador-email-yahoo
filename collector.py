@@ -24,8 +24,8 @@ from typing import Any
 
 IMAP_HOST = "imap.mail.yahoo.com"
 IMAP_PORT = 993
-SMTP_HOST = "smtp.mail.yahoo.com"
-SMTP_PORT = 465
+GMAIL_SMTP_HOST = "smtp.gmail.com"
+GMAIL_SMTP_PORT = 465
 STATE_PATH = Path(os.getenv("STATE_PATH", "state/state.json"))
 INITIAL_LOOKBACK_DAYS = int(os.getenv("INITIAL_LOOKBACK_DAYS", "2"))
 MAX_MESSAGES_PER_ACCOUNT = int(os.getenv("MAX_MESSAGES_PER_ACCOUNT", "100"))
@@ -108,7 +108,7 @@ def build_forward(
     message_id = decode_text(original.get("Message-ID"))
 
     forwarded = EmailMessage()
-    forwarded["From"] = account.email
+    forwarded["From"] = central_gmail
     forwarded["To"] = central_gmail
     forwarded["Reply-To"] = sender
     forwarded["Subject"] = f"[Yahoo: {account.label}] {subject}"
@@ -237,6 +237,7 @@ def process_account(
     account: YahooAccount,
     central_gmail: str,
     state: dict[str, Any],
+    smtp: smtplib.SMTP_SSL,
 ) -> tuple[int, int]:
     account_state = state["accounts"].setdefault(account.state_key, {})
     last_uid_raw = account_state.get("last_uid")
@@ -256,28 +257,28 @@ def process_account(
         if not uids:
             return copied, errors
 
-        with smtplib.SMTP_SSL(
-            SMTP_HOST, SMTP_PORT, context=context, timeout=60
-        ) as smtp:
-            smtp.login(account.email, account.app_password)
-            for uid in uids:
-                try:
-                    raw_message = fetch_message(imap, uid)
-                    original = BytesParser(policy=policy.default).parsebytes(raw_message)
-                    forwarded = build_forward(original, account, central_gmail)
-                    smtp.send_message(forwarded)
-                except Exception:
-                    errors += 1
-                    LOG.exception(
-                        "%s: falha ao copiar a mensagem UID %d.",
-                        account.state_key,
-                        uid,
-                    )
-                    break
-                else:
-                    copied += 1
-                    account_state["last_uid"] = uid
-                    account_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        for uid in uids:
+            try:
+                raw_message = fetch_message(imap, uid)
+                original = BytesParser(policy=policy.default).parsebytes(raw_message)
+                forwarded = build_forward(original, account, central_gmail)
+                smtp.send_message(
+                    forwarded,
+                    from_addr=central_gmail,
+                    to_addrs=[central_gmail],
+                )
+            except Exception:
+                errors += 1
+                LOG.exception(
+                    "%s: falha ao copiar a mensagem UID %d.",
+                    account.state_key,
+                    uid,
+                )
+                break
+            else:
+                copied += 1
+                account_state["last_uid"] = uid
+                account_state["updated_at"] = datetime.now(timezone.utc).isoformat()
     return copied, errors
 
 
@@ -290,6 +291,12 @@ def main() -> int:
     if "@" not in central_gmail:
         LOG.error("O segredo CENTRAL_GMAIL não foi configurado corretamente.")
         return 2
+    gmail_app_password = (
+        os.getenv("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
+    )
+    if not gmail_app_password:
+        LOG.error("O segredo GMAIL_APP_PASSWORD não foi configurado.")
+        return 2
 
     try:
         accounts = load_accounts()
@@ -300,17 +307,39 @@ def main() -> int:
 
     total_copied = 0
     total_errors = 0
-    for account in accounts:
-        try:
-            copied, errors = process_account(account, central_gmail, state)
-        except (imaplib.IMAP4.error, smtplib.SMTPException, OSError, RuntimeError):
-            total_errors += 1
-            LOG.exception("Falha ao processar %s.", account.state_key)
-        else:
-            total_copied += copied
-            total_errors += errors
-        finally:
-            save_state(state)
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP_SSL(
+            GMAIL_SMTP_HOST,
+            GMAIL_SMTP_PORT,
+            context=context,
+            timeout=60,
+        ) as smtp:
+            smtp.login(central_gmail, gmail_app_password)
+            for account in accounts:
+                try:
+                    copied, errors = process_account(
+                        account,
+                        central_gmail,
+                        state,
+                        smtp,
+                    )
+                except (
+                    imaplib.IMAP4.error,
+                    smtplib.SMTPException,
+                    OSError,
+                    RuntimeError,
+                ):
+                    total_errors += 1
+                    LOG.exception("Falha ao processar %s.", account.state_key)
+                else:
+                    total_copied += copied
+                    total_errors += errors
+                finally:
+                    save_state(state)
+    except (smtplib.SMTPException, OSError):
+        LOG.exception("Falha ao conectar ao Gmail para enviar as mensagens.")
+        return 1
 
     LOG.info(
         "Finalizado: %d mensagem(ns) copiada(s); %d erro(s).",
