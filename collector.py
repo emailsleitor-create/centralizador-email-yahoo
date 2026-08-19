@@ -12,6 +12,7 @@ import re
 import smtplib
 import ssl
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email import policy
@@ -225,18 +226,84 @@ def save_state(state: dict[str, Any]) -> None:
     temporary.replace(STATE_PATH)
 
 
-def search_uids(imap: imaplib.IMAP4_SSL, last_uid: int | None) -> list[int]:
-    if last_uid is not None:
-        criterion = f"UID {last_uid + 1}:*"
-        status, result = imap.uid("search", None, criterion)
-    else:
-        since = (datetime.now(timezone.utc) - timedelta(days=INITIAL_LOOKBACK_DAYS))
-        status, result = imap.uid("search", None, "SINCE", since.strftime("%d-%b-%Y"))
-    if status != "OK":
-        raise RuntimeError("O Yahoo não conseguiu pesquisar as mensagens.")
-    raw_uids = result[0].split() if result and result[0] else []
-    uids = [int(value) for value in raw_uids]
-    return uids[:MAX_MESSAGES_PER_ACCOUNT]
+def connect_imap(account: YahooAccount, max_retries: int = 3) -> imaplib.IMAP4_SSL:
+    last_exc: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            context = ssl.create_default_context()
+            imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=context)
+            imap.login(account.email, account.app_password)
+            status, _ = imap.select("INBOX", readonly=True)
+            if status != "OK":
+                raise RuntimeError(f"Não foi possível abrir a caixa de entrada para {account.email}")
+            return imap
+        except Exception as exc:
+            last_exc = exc
+            LOG.warning(
+                "%s: tentativa %d de conexão IMAP falhou: %s",
+                account.state_key,
+                attempt,
+                exc,
+            )
+            if attempt < max_retries:
+                time.sleep(2 * attempt)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Falha desconhecida ao conectar ao Yahoo IMAP.")
+
+
+def connect_smtp(
+    central_gmail: str,
+    gmail_app_password: str,
+    max_retries: int = 3,
+) -> smtplib.SMTP_SSL:
+    last_exc: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            context = ssl.create_default_context()
+            smtp = smtplib.SMTP_SSL(
+                GMAIL_SMTP_HOST,
+                GMAIL_SMTP_PORT,
+                context=context,
+                timeout=60,
+            )
+            smtp.login(central_gmail, gmail_app_password)
+            return smtp
+        except Exception as exc:
+            last_exc = exc
+            LOG.warning("Tentativa %d de conexão SMTP com Gmail falhou: %s", attempt, exc)
+            if attempt < max_retries:
+                time.sleep(3 * attempt)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Falha ao conectar ao Gmail via SMTP.")
+
+
+def search_uids(imap: imaplib.IMAP4_SSL, last_uid: int | None, max_retries: int = 3) -> list[int]:
+    last_exc: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            if last_uid is not None:
+                criterion = f"UID {last_uid + 1}:*"
+                status, result = imap.uid("search", None, criterion)
+            else:
+                since = (datetime.now(timezone.utc) - timedelta(days=INITIAL_LOOKBACK_DAYS))
+                status, result = imap.uid("search", None, "SINCE", since.strftime("%d-%b-%Y"))
+            if status != "OK":
+                raise RuntimeError("O Yahoo não conseguiu pesquisar as mensagens.")
+            raw_uids = result[0].split() if result and result[0] else []
+            uids = [int(value) for value in raw_uids]
+            if last_uid is not None:
+                uids = [uid for uid in uids if uid > last_uid]
+            return uids[:MAX_MESSAGES_PER_ACCOUNT]
+        except Exception as exc:
+            last_exc = exc
+            LOG.warning("Tentativa %d de busca de mensagens falhou: %s", attempt, exc)
+            if attempt < max_retries:
+                time.sleep(2 * attempt)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Falha ao pesquisar UIDs no Yahoo.")
 
 
 def load_backfill_config() -> BackfillConfig | None:
@@ -271,30 +338,50 @@ def load_backfill_config() -> BackfillConfig | None:
 def search_unread_history(
     imap: imaplib.IMAP4_SSL,
     config: BackfillConfig,
+    max_retries: int = 3,
 ) -> list[int]:
-    status, result = imap.uid(
-        "search",
-        None,
-        "UNSEEN",
-        "SINCE",
-        config.since.strftime("%d-%b-%Y"),
-        "BEFORE",
-        config.before.strftime("%d-%b-%Y"),
-    )
-    if status != "OK":
-        raise RuntimeError("O Yahoo não conseguiu pesquisar o histórico.")
-    raw_uids = result[0].split() if result and result[0] else []
-    return [int(value) for value in raw_uids]
+    last_exc: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            status, result = imap.uid(
+                "search",
+                None,
+                "UNSEEN",
+                "SINCE",
+                config.since.strftime("%d-%b-%Y"),
+                "BEFORE",
+                config.before.strftime("%d-%b-%Y"),
+            )
+            if status != "OK":
+                raise RuntimeError("O Yahoo não conseguiu pesquisar o histórico.")
+            raw_uids = result[0].split() if result and result[0] else []
+            return [int(value) for value in raw_uids]
+        except Exception as exc:
+            last_exc = exc
+            LOG.warning("Tentativa %d de busca no histórico falhou: %s", attempt, exc)
+            if attempt < max_retries:
+                time.sleep(2 * attempt)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Falha ao pesquisar histórico no Yahoo.")
 
 
-def fetch_message(imap: imaplib.IMAP4_SSL, uid: int) -> bytes:
-    status, result = imap.uid("fetch", str(uid), "(BODY.PEEK[])")
-    if status != "OK" or not result:
-        raise RuntimeError(f"Não foi possível baixar a mensagem UID {uid}.")
-    for item in result:
-        if isinstance(item, tuple) and isinstance(item[1], bytes):
-            return item[1]
-    raise MessageUnavailableError(f"Conteúdo ausente na mensagem UID {uid}.")
+def fetch_message(imap: imaplib.IMAP4_SSL, uid: int, max_retries: int = 3) -> bytes:
+    for attempt in range(1, max_retries + 1):
+        try:
+            status, result = imap.uid("fetch", str(uid), "(BODY.PEEK[])")
+            if status != "OK" or not result:
+                raise RuntimeError(f"Não foi possível baixar a mensagem UID {uid}.")
+            for item in result:
+                if isinstance(item, tuple) and isinstance(item[1], bytes):
+                    return item[1]
+            raise MessageUnavailableError(f"Conteúdo ausente na mensagem UID {uid}.")
+        except MessageUnavailableError:
+            raise
+        except Exception as exc:
+            if attempt == max_retries:
+                raise
+            time.sleep(2)
 
 
 def process_account(
@@ -309,12 +396,7 @@ def process_account(
     copied = 0
     errors = 0
 
-    context = ssl.create_default_context()
-    with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=context) as imap:
-        imap.login(account.email, account.app_password)
-        status, _ = imap.select("INBOX", readonly=True)
-        if status != "OK":
-            raise RuntimeError("Não foi possível abrir a caixa de entrada.")
+    with connect_imap(account) as imap:
         uids = search_uids(imap, last_uid)
         LOG.info("%s: %d mensagem(ns) nova(s).", account.state_key, len(uids))
 
@@ -377,12 +459,7 @@ def process_backfill_account(
     errors = 0
     handled = 0
 
-    context = ssl.create_default_context()
-    with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=context) as imap:
-        imap.login(account.email, account.app_password)
-        status, _ = imap.select("INBOX", readonly=True)
-        if status != "OK":
-            raise RuntimeError("Não foi possível abrir a caixa de entrada.")
+    with connect_imap(account) as imap:
         candidates = [
             uid for uid in search_unread_history(imap, config) if uid not in processed
         ]
@@ -458,15 +535,8 @@ def main() -> int:
 
     total_copied = 0
     total_errors = 0
-    context = ssl.create_default_context()
     try:
-        with smtplib.SMTP_SSL(
-            GMAIL_SMTP_HOST,
-            GMAIL_SMTP_PORT,
-            context=context,
-            timeout=60,
-        ) as smtp:
-            smtp.login(central_gmail, gmail_app_password)
+        with connect_smtp(central_gmail, gmail_app_password) as smtp:
             for account in accounts:
                 try:
                     copied, errors = process_account(

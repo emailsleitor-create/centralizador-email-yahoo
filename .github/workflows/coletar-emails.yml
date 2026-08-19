@@ -2,8 +2,8 @@ name: Coletar emails Yahoo
 
 on:
   schedule:
-    - cron: "0 8,18 * * *"
-      timezone: "America/Fortaleza"
+    # 08:00 e 18:00 Horário de Brasília / Fortaleza (UTC-3) -> 11:00 e 21:00 UTC
+    - cron: "0 11,21 * * *"
   workflow_dispatch:
   push:
     paths:

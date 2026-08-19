@@ -14,6 +14,7 @@ from collector import (
     extract_body,
     fetch_message,
     safe_filename,
+    search_uids,
     search_unread_history,
 )
 
@@ -122,6 +123,16 @@ class CollectorTests(unittest.TestCase):
                 "21-Jul-2026",
             ),
         )
+
+    def test_search_uids_filters_strictly_above_last_uid(self):
+        class SearchImap:
+            def uid(self, *args):
+                # Simula o caso em que o servidor IMAP retorna o próprio last_uid ou anteriores
+                return "OK", [b"71 72 73"]
+
+        imap = SearchImap()
+        uids = search_uids(imap, last_uid=71)
+        self.assertEqual(uids, [72, 73])
 
 
 if __name__ == "__main__":
